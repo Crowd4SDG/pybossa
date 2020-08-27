@@ -30,7 +30,7 @@ from itsdangerous import BadData
 from markdown import markdown
 import time
 
-from flask import Blueprint, request, url_for, flash, redirect, abort
+from flask import Blueprint, request, url_for, flash, redirect, abort, send_from_directory
 from flask import render_template, current_app
 from flask_login import login_required, login_user, logout_user, \
     current_user
@@ -351,7 +351,8 @@ def register():
         mail_queue.enqueue(send_mail, msg)
         data = dict(template='account/account_validation.html',
                     title=gettext("Account validation"),
-                    status='sent')
+                    status='sent',
+                    flash='An email has been sent to validate your email address')
         return handle_content_type(data)
     if request.method == 'POST' and not form.validate():
         flash(gettext('Please correct the errors'), 'error')
@@ -662,8 +663,7 @@ def _handle_avatar_update(user, avatar_form):
         user.info['avatar_url'] = avatar_url
         user_repo.update(user)
         cached_users.delete_user_summary(user.name)
-        flash(gettext('Your avatar has been updated! It may \
-                      take some minutes to refresh...'), 'success')
+        flash(gettext('Your avatar has been updated! It may take some minutes to refresh'), 'success')
         return True
     else:
         flash("You have to provide an image file to update your avatar", "error")
@@ -726,7 +726,7 @@ def _handle_password_update(user, password_form):
         if user.check_password(password_form.current_password.data):
             user.set_password(password_form.new_password.data)
             user_repo.update(user)
-            flash(gettext('Yay, you changed your password succesfully!'),
+            flash(gettext('You changed your password succesfully!'),
                   'success')
             return True
         else:
@@ -875,6 +875,46 @@ def start_export(name):
     flash(msg, 'success')
     return redirect_content_type(url_for('account.profile', name=name))
 
+@blueprint.route('/<name>/project/<short_name>/contributions')
+@login_required
+def start_export_contributions(name,short_name):
+    """
+    Starts a export of all user data contributions per project according to EU GDPR
+
+    Data will be available on GET /contributions after it is processed
+
+    """
+    from pybossa.core import project_repo, task_repo, result_repo
+    from pybossa.exporter.json_export import JsonExporter
+    json_exporter = JsonExporter()
+
+    project = project_repo.get_by(short_name=short_name)
+    user = user_repo.get_by_name(name)
+
+    if not user:
+        return abort(404)
+    if user.id != current_user.id:
+        return abort(403)
+
+    ensure_authorized_to('update', user)
+    #export_queue.enqueue(export_userdata_contributions,
+    #                     user_id=user.id,
+    #                    project_shortname=short_name)
+
+    #del user_data['passwd_hash']
+    taskruns = task_repo.filter_task_runs_by(user_id=user.id,project_id=project.id)
+    taskruns_data = [tr.dictize() for tr in taskruns]
+
+    ucf = None
+    if len(taskruns_data) > 0:
+        ucf = json_exporter._make_zip(None, '', 'user_contributions', taskruns_data, user.id,
+                                      'user_contributions.zip')
+
+    user_filename = 'user_'+str(user.id)+'/'+ucf
+    data = dict(msg='success',link=user_filename)
+    #return send_from_directory(uploader.upload_folder, user_filename)
+    return handle_content_type(data)
+
 
 @blueprint.route('/<name>/resetapikey', methods=['GET', 'POST'])
 @login_required
@@ -982,3 +1022,16 @@ def get_user_pref_and_metadata(user_name, form):
         if form.locations.data:
             user_pref['locations'] = form.locations.data
         return user_pref, metadata
+
+
+@blueprint.route('/save_forum_info/<name>', methods=['POST'])
+@login_required
+def save_forum_info(name):
+    user = user_repo.get_by_name(name=name)
+    ensure_authorized_to('update', user)
+    data=request.get_json()
+    user.info['forum_info'] = data
+    user_repo.update(user)
+    #flash("Input saved successfully", "info")
+    response = dict(status='success')
+    return handle_content_type(response)
